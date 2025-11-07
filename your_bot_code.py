@@ -3,11 +3,11 @@ from pathlib import Path
 from datetime import datetime
 import telebot
 from telebot.types import Message
+import os
 
 # -------------------------
 # CONFIG
 # -------------------------
-import os
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 OWNER_ID = int(os.getenv("OWNER_ID"))
 DATA_FILE = Path("data.json")
@@ -19,8 +19,6 @@ bot = telebot.TeleBot(BOT_TOKEN, parse_mode=None)
 # Persistent data
 # -------------------------
 DEFAULT_DATA = {
-    "bot_admins": [],
-    "full_admins": [],
     "banned": [],
     "mutes": {}
 }
@@ -48,8 +46,6 @@ def log_action(text):
     print(line.strip())
 
 data = load_data()
-BOT_ADMINS = set(data.get("bot_admins", []))
-FULL_ADMINS = set(data.get("full_admins", []))
 
 URL_PATTERN = re.compile(r"(https?://[^\s]+)|([^\s]+\.(com|net|org|io|me|gg|xyz)(/[^\s]*)?)", re.IGNORECASE)
 
@@ -59,17 +55,16 @@ URL_PATTERN = re.compile(r"(https?://[^\s]+)|([^\s]+\.(com|net|org|io|me|gg|xyz)
 def is_owner(user_id):
     return user_id == OWNER_ID
 
-def is_restricted_admin(user_id):
-    return user_id in BOT_ADMINS
-
-def is_full_admin(user_id):
-    return user_id in FULL_ADMINS
-
-def has_permission(user_id, command_name):
-    if is_owner(user_id) or is_full_admin(user_id):
+def has_permission(user_id, chat_id, command_name=None):
+    """Return True if user is bot owner or chat admin/creator"""
+    if is_owner(user_id):
         return True
-    if is_restricted_admin(user_id):
-        return command_name not in ["ban", "kick", "mute"]
+    try:
+        member = bot.get_chat_member(chat_id, user_id)
+        if member.status in ["creator", "administrator"]:
+            return True
+    except:
+        pass
     return False
 
 def parse_target_from_message(msg_text, reply_msg):
@@ -104,7 +99,7 @@ def parse_duration_to_seconds(s):
 def mod_command_wrapper(command_name):
     def decorator(cmd_func):
         def wrapper(msg: Message):
-            if not has_permission(msg.from_user.id, command_name):
+            if not has_permission(msg.from_user.id, msg.chat.id, command_name):
                 bot.reply_to(msg, "You don't have permission to use this command")
                 return
             cmd_func(msg)
@@ -122,9 +117,6 @@ def cmd_start(msg: Message):
 def cmd_help(msg: Message):
     help_text = (
         "/help - this message\n"
-        "/admin add @username - add restricted bot admin (owner only)\n"
-        "/fullperadmin @username - add full bot admin (owner only)\n"
-        "/admin remove @username - remove any bot admin (owner only)\n"
         "/mute <id/@username or reply> [duration]\n"
         "/unmute <id/@username or reply>\n"
         "/ban <id/@username or reply>\n"
@@ -132,50 +124,6 @@ def cmd_help(msg: Message):
         "/kick <id/@username or reply>\n"
     )
     bot.reply_to(msg, help_text)
-
-# -------------------------
-# Admin management
-# -------------------------
-@bot.message_handler(commands=["admin"])
-def cmd_admin(msg: Message):
-    if not is_owner(msg.from_user.id):
-        bot.reply_to(msg, "Only owner can manage bot admins")
-        return
-    target_id, _ = parse_target_from_message(msg.text, msg.reply_to_message)
-    if not target_id:
-        bot.reply_to(msg, "Cannot find target user")
-        return
-    if "add" in msg.text.lower():
-        BOT_ADMINS.add(target_id)
-        data["bot_admins"] = list(BOT_ADMINS)
-        save_data(data)
-        bot.reply_to(msg, f"Added restricted bot admin {target_id}")
-        log_action(f"OWNER added restricted admin {target_id}")
-    elif "remove" in msg.text.lower():
-        BOT_ADMINS.discard(target_id)
-        FULL_ADMINS.discard(target_id)
-        data["bot_admins"] = list(BOT_ADMINS)
-        data["full_admins"] = list(FULL_ADMINS)
-        save_data(data)
-        bot.reply_to(msg, f"Removed admin {target_id}")
-        log_action(f"OWNER removed admin {target_id}")
-
-@bot.message_handler(commands=["fullperadmin"])
-def cmd_fulladmin(msg: Message):
-    if not is_owner(msg.from_user.id):
-        bot.reply_to(msg, "Only owner can assign full bot admins")
-        return
-    target_id, _ = parse_target_from_message(msg.text, msg.reply_to_message)
-    if not target_id:
-        bot.reply_to(msg, "Cannot find target user")
-        return
-    FULL_ADMINS.add(target_id)
-    BOT_ADMINS.discard(target_id)
-    data["full_admins"] = list(FULL_ADMINS)
-    data["bot_admins"] = list(BOT_ADMINS)
-    save_data(data)
-    bot.reply_to(msg, f"Added full bot admin {target_id}")
-    log_action(f"OWNER added full admin {target_id}")
 
 # -------------------------
 # Moderation functions
@@ -325,3 +273,9 @@ def mute_watcher():
         time.sleep(10)
 
 threading.Thread(target=mute_watcher, daemon=True).start()
+
+# -------------------------
+# START BOT
+# -------------------------
+print("Bot is running...")
+bot.infinity_polling(timeout=60, long_polling_timeout=30)
